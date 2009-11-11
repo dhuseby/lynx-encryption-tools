@@ -235,38 +235,13 @@ int read_encrypted_frame(FILE * const in,
 }
 
 
-int process_frame(FILE * in, FILE * out)
+int main (int argc, char ** argv) 
 {
-    int detected_blocks = 0;
-    unsigned char tmp = 0;
-    plaintext_frame_t plaintext_frame;
+    FILE *in = 0;
+    FILE *out = 0;
+    int blocks = 0;
     encrypted_frame_t encrypted_frame;
- 
-    /* clear out the decrypted frame buffer */
-    memset(plaintext_frame.data, 0, sizeof(plaintext_frame_t));
-
-    /* read in the next encrypted frame of data */
-    detected_blocks = read_encrypted_frame(in, &encrypted_frame);
-    
-    /* decrypt the frame if there is data in it */
-    if(detected_blocks)
-    {
-        /* decrypt a single frame of the encrypted loader */
-        decrypt_frame(&plaintext_frame, &encrypted_frame, lynx_public_exp, lynx_public_mod);
-    }
-
-    /* write the decrypted frame */
-    fwrite(plaintext_frame.data, MAX_PLAINTEXT_FRAME_SIZE, 1, out);
-
-    return 1;
-}
-
-
-
-int main (int argc, const char * argv[]) 
-{
-    FILE *in;
-    FILE *out;
+    plaintext_frame_t plaintext_frame;
 
     if(argc < 3)
     {
@@ -290,20 +265,17 @@ int main (int argc, const char * argv[])
         return EXIT_FAILURE;
     }
 
-    /* process the first frame of encrypted data */
-    if(!process_frame(in, out))
-    {
-        fclose(in);
-        fclose(out);
-        return EXIT_FAILURE;
-    }
+    /* clear out the decrypted frame buffer */
+    memset(plaintext_frame.data, 0, sizeof(plaintext_frame_t));
 
-    /* process the second frame of encrypted data */
-    if(!process_frame(in, out))
+    /* read in the next encrypted frame of data */
+    while(read_encrypted_frame(in, &encrypted_frame))
     {
-        fclose(in);
-        fclose(out);
-        return EXIT_SUCCESS;
+        /* decrypt a single frame of the encrypted loader */
+        decrypt_frame(&plaintext_frame, &encrypted_frame, lynx_public_exp, lynx_public_mod);
+
+        /* write the decrypted frame */
+        fwrite(plaintext_frame.data, MAX_PLAINTEXT_FRAME_SIZE, 1, out);
     }
 
     /* close the files */

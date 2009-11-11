@@ -64,6 +64,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+#include <unistd.h>
 #include <openssl/bn.h>
 #include "sizes.h"
 #include "keys.h"
@@ -81,6 +83,11 @@ typedef struct plaintext_frame_s
     unsigned char data[MAX_PLAINTEXT_FRAME_SIZE];
 } plaintext_frame_t;
 
+typedef struct frame_def_s
+{
+    long offset;
+    int blocks;
+} frame_def_t;
 
 #define min(x,y) ((x < y) ? x : y)
 void print_data(const unsigned char * data, int size)
@@ -227,27 +234,11 @@ int read_plaintext_frame(FILE * const in,
     memset(frame, 0, sizeof(plaintext_frame_t));
 
     /* read the block count */
-    if(fread(frame->data, MAX_PLAINTEXT_FRAME_SIZE, 1, in) != 1)
-        return 0;
-
-    /* detect the number of frames */
-    for(i = 0; i < MAX_BLOCKS_PER_FRAME; i++)
-    {
-        for(j = 0; j < PLAINTEXT_BLOCK_SIZE; j++)
-        {
-            if(frame->data[(i * PLAINTEXT_BLOCK_SIZE) + j] != 0x00)
-            {
-                frame->blocks++;
-                break;
-            }
-        }
-    }
-    
-    return frame->blocks;
+    return (fread(frame->data, MAX_PLAINTEXT_FRAME_SIZE, 1, in) == 1);
 }
 
 
-int process_frame(FILE * in, FILE * out)
+int process_frame(FILE * in, FILE * out, frame_def_t * frame)
 {
     int detected_blocks = 0;
     unsigned char tmp = 0;
@@ -257,21 +248,28 @@ int process_frame(FILE * in, FILE * out)
     /* clear out the buffers */
     memset(&encrypted_frame, 0, sizeof(encrypted_frame_t));
 
-    /* read in the next encrypted frame of data */
-    detected_blocks = read_plaintext_frame(in, &plaintext_frame);
-
-    /* encrypt the frame if there is data in it */
-    if(!detected_blocks)
+    /* seek to the specified offset */
+    if(fseek(in, frame->offset, SEEK_SET) != 0)
     {
-        printf("No plaintext blocks in frame, forcing encryption of one empty block\n");
-        plaintext_frame.blocks = 1;
+        fprintf(stderr, "error: invalid frame offset %li\n", frame->offset);
+        return 0;
     }
 
+    /* read in the next encrypted frame of data */
+    if(!read_plaintext_frame(in, &plaintext_frame))
+    {
+        fprintf(stderr, "error: failed to read plaintext block\n");
+        return 0;
+    }
+
+    /* store the number of blocks to encrypt */
+    plaintext_frame.blocks = frame->blocks;
+
     /* encrypt a single frame of the encrypted loader */
+    printf("Encrypting %d blocks of plaintext from offset 0x%08x\n", plaintext_frame.blocks, (unsigned int)frame->offset);
     encrypt_frame(&encrypted_frame, &plaintext_frame, lynx_private_exp, lynx_public_mod);
  
     /* write the encrypted frame block count */
-    printf("Frame contains %d blocks of encrypted data\n", encrypted_frame.blocks);
     tmp = 256 - encrypted_frame.blocks;
     fwrite(&tmp, sizeof(unsigned char), 1, out);
 
@@ -281,54 +279,231 @@ int process_frame(FILE * in, FILE * out)
     return 1;
 }
 
-int main (int argc, const char * argv[]) 
+int read_frame_config(FILE * cfg, frame_def_t * frame, int line)
+{
+    long offset = 0;
+    int blocks = 0;
+    int state = 0;
+    int started = 0;
+    char c;
+
+    while(fread(&c, 1, 1, cfg) == 1)
+    {
+        switch(state)
+        {
+            case 0:
+            {
+                /* we're reading the offset */
+                if(isdigit(c))
+                {
+                    if(!started)
+                        started = 1;
+
+                    offset *= 10;
+                    offset += (c - '0');
+                }
+                else if(c == '\n')
+                {
+                    if(started)
+                    {
+                        /* error, looking for a comma */
+                        fprintf(stderr, 
+                            "syntax error: expecting ',' after offset on line %d\n", line);
+                    }
+                    return 0;
+                }
+                else if(c == ',')
+                {
+                    /* switch to blocks state */
+                    started = 0;
+                    state = 1;
+                }
+                else
+                {
+                    fprintf(stderr,
+                            "syntax error: expecting offset number on line %d\n", line);
+                    return 0;
+                }
+                break;
+            }
+            case 1:
+            {
+                /* we're reading the blocks number */
+                if((c == ' ') || (c == '\t'))
+                {
+                    /* eat whitespace */
+                }
+                else if(isdigit(c))
+                {
+                    blocks *= 10;
+                    blocks += (c - '0');
+                }
+                else if(c == '\n')
+                {
+                    frame->offset = offset;
+                    frame->blocks = blocks;
+                    return 1;
+                }
+                else
+                {
+                    fprintf(stderr,
+                            "syntax error: expecting block number on line %d\n", line);
+                    return 0;
+                }
+                break;
+            }
+        }
+    }
+
+    fprintf(stderr, 
+            "syntax error: reached EOF with incomplete frame definition, line %d\n", line);
+    return 0;
+}
+
+int read_config_file(FILE * cfg, frame_def_t ** frames)
+{
+    int line = 1;
+    int frame_count = 0;
+    frame_def_t frame_def;
+
+    memset(&frame_def, 0, sizeof(frame_def_t));
+
+    while(read_frame_config(cfg, &frame_def, line))
+    {
+        /* make room for this new frame */
+        (*frames) = realloc((*frames), (frame_count + 1) * sizeof(frame_def_t));
+
+        /* copy the new frame into place */
+        memcpy(&((*frames)[frame_count]), &frame_def, sizeof(frame_def_t));
+
+        /* increment the line number */
+        line++;
+
+        /* increment the total frame count */
+        frame_count++;
+    }
+
+    return frame_count;
+}
+
+void print_help(char * name)
+{
+    printf("usage: %s -c <config file> -p <plaintext binary> -e <encrypted binary>\n\n", name);
+}
+
+int main (int argc, char ** argv) 
 {
     FILE *in;
     FILE *out;
-   
+    FILE *cfg;
+    int i;
+    int opt;
+    int status;
+    int frame_count = 0;
+    char * cfg_file = 0;
+    char * plaintext_file = 0;
+    char * encrypted_file = 0;
+    frame_def_t * frames = 0;
+
     if(argc < 3)
     {
-        printf("usage: %s <plaintext.bin> <encrypted.bin>\n", argv[0]);
+        print_help(argv[0]);
         return EXIT_FAILURE;
     }
 
-    /* open the binary encrypted loader */
-    in = fopen(argv[1], "rb");
-    out = fopen(argv[2], "wb+");
+    /* parse the command line options */
+    while((opt = getopt(argc, argv, "hc:p:e:")) != -1) 
+    {
+        switch(opt) 
+        {
+            case 'c':
+                cfg_file = strdup(optarg);
+                break;
+            case 'p':
+                plaintext_file = strdup(optarg);
+                break;
+            case 'e':
+                encrypted_file = strdup(optarg);
+                break;
+            case 'h':
+                print_help(argv[0]);
+                status = EXIT_SUCCESS;
+                goto cleanup;
+            case ':':
+                fprintf(stderr, "error: option `%c' needs a value\n\n", optopt);
+                status = EXIT_FAILURE;
+                goto cleanup;
+            case '?':
+                fprintf(stderr, "error: no such option: `%c'\n\n", optopt);
+                status = EXIT_FAILURE;
+                goto cleanup;
+        }
+    }
+
+    if(!cfg_file || !plaintext_file || !encrypted_file)
+    {
+        print_help(argv[0]);
+        status = EXIT_FAILURE;
+        goto cleanup;
+    }
+
+    /* open the files */
+    in = fopen(plaintext_file, "rb");
+    out = fopen(encrypted_file, "wb+");
+    cfg = fopen(cfg_file, "r");
 
     /* check for successful opens */
     if(!in)
     {
-        fprintf(stderr, "failed to open encrypted loader file: %s\n", argv[1]);
-        return EXIT_FAILURE;
+        fprintf(stderr, "failed to open plaintext loader file: %s\n\n", plaintext_file);
+        status = EXIT_FAILURE;
+        goto cleanup;
     }
     if(!out)
     {
-        fclose(in);
-        fprintf(stderr, "failed to open plaintext loader file for writing: %s\n", argv[2]);
-        return EXIT_FAILURE;
+        fprintf(stderr, "failed to open encrypted loader file for writing: %s\n\n", encrypted_file);
+        status = EXIT_FAILURE;
+        goto cleanup;
     }
-
-    /* process the first frame of plaintext data */
-    if(!process_frame(in, out))
+    if(!cfg)
     {
-        fclose(in);
-        fclose(out);
-        return EXIT_FAILURE;
+        fprintf(stderr, "failed to open config file: %s\n\n", cfg_file);
+        status = EXIT_FAILURE;
+        goto cleanup;
     }
 
-    /* process the second frame of plaintext data */
-    if(!process_frame(in, out))
+    /* read in the frames config file */
+    if((frame_count = read_config_file(cfg, &frames)) <= 0)
     {
-        fclose(in);
-        fclose(out);
-        return EXIT_FAILURE;
+        fprintf(stderr, "failed to read config file\n\n");
+        status = EXIT_FAILURE;
+        goto cleanup;
     }
 
-    /* close the output files */
+    /* process the frames */
+    for(i = 0; i < frame_count; i++)
+    {
+        /* process the first frame of plaintext data */
+        if(!process_frame(in, out, &frames[i]))
+        {
+            fprintf(stderr, "failed to process frame %d\n\n", i);
+            status = EXIT_FAILURE;
+            goto cleanup;
+        }
+    }
+
+    status = EXIT_SUCCESS;
+
+cleanup:
     fclose(in);
     fclose(out);
-
-    return EXIT_SUCCESS;
+    fclose(cfg);
+    if(plaintext_file)
+        free(plaintext_file);
+    if(encrypted_file)
+        free(encrypted_file);
+    if(cfg_file)
+        free(cfg_file);
+    return status;
 }
 
