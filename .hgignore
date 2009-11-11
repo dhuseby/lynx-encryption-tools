@@ -1,5 +1,5 @@
 syntax: glob
-.swp
+*.swp
 *~
 lynxenc
 lynxdec

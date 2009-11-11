@@ -247,14 +247,45 @@ int read_plaintext_frame(FILE * const in,
 }
 
 
+int process_frame(FILE * in, FILE * out)
+{
+    int detected_blocks = 0;
+    unsigned char tmp = 0;
+    plaintext_frame_t plaintext_frame;
+    encrypted_frame_t encrypted_frame;
+ 
+    /* clear out the buffers */
+    memset(&encrypted_frame, 0, sizeof(encrypted_frame_t));
+
+    /* read in the next encrypted frame of data */
+    detected_blocks = read_plaintext_frame(in, &plaintext_frame);
+
+    /* encrypt the frame if there is data in it */
+    if(!detected_blocks)
+    {
+        printf("No plaintext blocks in frame, forcing encryption of one empty block\n");
+        plaintext_frame.blocks = 1;
+    }
+
+    /* encrypt a single frame of the encrypted loader */
+    encrypt_frame(&encrypted_frame, &plaintext_frame, lynx_private_exp, lynx_public_mod);
+ 
+    /* write the encrypted frame block count */
+    printf("Frame contains %d blocks of encrypted data\n", encrypted_frame.blocks);
+    tmp = 256 - encrypted_frame.blocks;
+    fwrite(&tmp, sizeof(unsigned char), 1, out);
+
+    /* write the encrypted frame of data */
+    fwrite(encrypted_frame.data, (encrypted_frame.blocks * ENCRYPTED_BLOCK_SIZE), 1, out);
+
+    return 1;
+}
+
 int main (int argc, const char * argv[]) 
 {
     FILE *in;
     FILE *out;
-    unsigned char blocks = 0;
-    plaintext_frame_t plaintext_frame;
-    encrypted_frame_t encrypted_frame;
-    
+   
     if(argc < 3)
     {
         printf("usage: %s <plaintext.bin> <encrypted.bin>\n", argv[0]);
@@ -273,30 +304,28 @@ int main (int argc, const char * argv[])
     }
     if(!out)
     {
+        fclose(in);
         fprintf(stderr, "failed to open plaintext loader file for writing: %s\n", argv[2]);
         return EXIT_FAILURE;
     }
 
-    while(!feof(in))
+    /* process the first frame of plaintext data */
+    if(!process_frame(in, out))
     {
-        /* clear out the buffers */
-        memset(&encrypted_frame, 0, sizeof(encrypted_frame_t));
-
-        /* read in the next encrypted frame of data */
-        if(!read_plaintext_frame(in, &plaintext_frame))
-            break;
-
-        /* encrypt a single frame of the encrypted loader */
-        encrypt_frame(&encrypted_frame, &plaintext_frame, lynx_private_exp, lynx_public_mod);
-
-        /* write the encrypted frame block count */
-        blocks = 256 - encrypted_frame.blocks;
-        fwrite(&blocks, sizeof(unsigned char), 1, out);
-
-        /* write the encrypted frame of data */
-        fwrite(encrypted_frame.data, (encrypted_frame.blocks * ENCRYPTED_BLOCK_SIZE), 1, out);
+        fclose(in);
+        fclose(out);
+        return EXIT_FAILURE;
     }
 
+    /* process the second frame of plaintext data */
+    if(!process_frame(in, out))
+    {
+        fclose(in);
+        fclose(out);
+        return EXIT_FAILURE;
+    }
+
+    /* close the output files */
     fclose(in);
     fclose(out);
 

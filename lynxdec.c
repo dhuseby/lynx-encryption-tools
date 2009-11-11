@@ -74,6 +74,12 @@ typedef struct encrypted_frame_s
     unsigned char data[MAX_ENCRYPTED_FRAME_SIZE];
 } encrypted_frame_t;
 
+typedef struct plaintext_frame_s
+{
+    int blocks;
+    unsigned char data[MAX_PLAINTEXT_FRAME_SIZE];
+} plaintext_frame_t;
+
 
 #define min(x,y) ((x < y) ? x : y)
 void print_data(const unsigned char * data, int size)
@@ -164,7 +170,7 @@ int decrypt_block(unsigned char * plaintext,
 
 
 /* This function decrypts an entire frame of encrypted data */
-void decrypt_frame(unsigned char * plaintext,
+void decrypt_frame(plaintext_frame_t * plaintext,
                    encrypted_frame_t * encrypted,
                    const unsigned char * public_exp,
                    const unsigned char * public_mod)
@@ -180,7 +186,7 @@ void decrypt_frame(unsigned char * plaintext,
     BN_CTX *ctx = BN_CTX_new();
 
     /* initialize the state */
-    d = plaintext;
+    d = plaintext->data;
     e = encrypted->data;
 
     /* decrypt the blocks in the frame */
@@ -192,6 +198,9 @@ void decrypt_frame(unsigned char * plaintext,
         /* move the pointers */
         d += PLAINTEXT_BLOCK_SIZE;
         e += ENCRYPTED_BLOCK_SIZE;
+
+        /* store the block count */
+        plaintext->blocks++;
     }
 
     /* free the bignum variables */
@@ -226,13 +235,38 @@ int read_encrypted_frame(FILE * const in,
 }
 
 
+int process_frame(FILE * in, FILE * out)
+{
+    int detected_blocks = 0;
+    unsigned char tmp = 0;
+    plaintext_frame_t plaintext_frame;
+    encrypted_frame_t encrypted_frame;
+ 
+    /* clear out the decrypted frame buffer */
+    memset(plaintext_frame.data, 0, sizeof(plaintext_frame_t));
+
+    /* read in the next encrypted frame of data */
+    detected_blocks = read_encrypted_frame(in, &encrypted_frame);
+    
+    /* decrypt the frame if there is data in it */
+    if(detected_blocks)
+    {
+        /* decrypt a single frame of the encrypted loader */
+        decrypt_frame(&plaintext_frame, &encrypted_frame, lynx_public_exp, lynx_public_mod);
+    }
+
+    /* write the decrypted frame */
+    fwrite(plaintext_frame.data, MAX_PLAINTEXT_FRAME_SIZE, 1, out);
+
+    return 1;
+}
+
+
+
 int main (int argc, const char * argv[]) 
 {
     FILE *in;
     FILE *out;
-    int blocks_decrypted;
-    unsigned char plaintext_frame[MAX_PLAINTEXT_FRAME_SIZE];
-    encrypted_frame_t encrypted_frame;
 
     if(argc < 3)
     {
@@ -256,22 +290,23 @@ int main (int argc, const char * argv[])
         return EXIT_FAILURE;
     }
 
-    while(!feof(in))
+    /* process the first frame of encrypted data */
+    if(!process_frame(in, out))
     {
-        /* clear out the decrypted frame buffer */
-        memset(plaintext_frame, 0, MAX_PLAINTEXT_FRAME_SIZE);
-
-        /* read in the next encrypted frame of data */
-        if(!read_encrypted_frame(in, &encrypted_frame))
-            break;
-
-        /* decrypt a single frame of the encrypted loader */
-        decrypt_frame(plaintext_frame, &encrypted_frame, lynx_public_exp, lynx_public_mod);
-
-        /* write the decrypted frame */
-        fwrite(plaintext_frame, MAX_PLAINTEXT_FRAME_SIZE, 1, out);
+        fclose(in);
+        fclose(out);
+        return EXIT_FAILURE;
     }
 
+    /* process the second frame of encrypted data */
+    if(!process_frame(in, out))
+    {
+        fclose(in);
+        fclose(out);
+        return EXIT_SUCCESS;
+    }
+
+    /* close the files */
     fclose(in);
     fclose(out);
 
