@@ -161,7 +161,10 @@ void encrypt_block(unsigned char * encrypted,
         (*p) = plaintext[0] - accumulator;
     }
 
-    memcpy(encrypted, buf, ENCRYPTED_BLOCK_SIZE);
+    /* memcpy(encrypted, buf, ENCRYPTED_BLOCK_SIZE); */
+
+    printf("buf:\n");
+    print_data(buf, 51);
 
     /* load the encoded plaintext */
     block = BN_bin2bn(buf, ENCRYPTED_BLOCK_SIZE, 0);
@@ -174,6 +177,9 @@ void encrypt_block(unsigned char * encrypted,
 
     /* get the encrypted data out */
     BN_bn2bin(result, buf);
+
+    printf("enc:\n");
+    print_data(buf, 51);
 
     /* reverse the data as we copy it into the encrypted frame */
     for(i = 0; i < ENCRYPTED_BLOCK_SIZE; i++)
@@ -234,7 +240,7 @@ int read_plaintext_frame(FILE * const in,
     memset(frame, 0, sizeof(plaintext_frame_t));
 
     /* read the block count */
-    return (fread(frame->data, MAX_PLAINTEXT_FRAME_SIZE, 1, in) == 1);
+    return (fread(frame->data, 1, MAX_PLAINTEXT_FRAME_SIZE, in) > 0);
 }
 
 

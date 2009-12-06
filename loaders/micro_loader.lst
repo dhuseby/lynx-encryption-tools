@@ -1,0 +1,46 @@
+ca65 V2.13.0 - (C) Copyright 1998-2005 Ullrich von Bassewitz
+Main file   : micro_loader.s
+Current file: micro_loader.s
+
+000000r 1               ; Micro Loader
+000000r 1               ; Copyright (C) 2009 David Huseby <dave@linuxprogrammer.org>
+000000r 1               ;
+000000r 1               ; This is a bare minimum Atari Lynx loader.
+000000r 1               
+000000r 1               
+000000r 1               .psc02                  ; turn on 65SC02 instruction set
+000000r 1               
+000000r 1                       RCART_0 = $fcb2 ; cart data register
+000000r 1                       IODIR   = $fd8a ; I/O direction register
+000000r 1                       IODAT   = $fd8b ; I/O data registers
+000000r 1                       SERCTL  = $fd8c ; serial control register
+000000r 1                       MAPCTL  = $fff9 ; memory map control register
+000000r 1                       EXE     = $0300 ; location where exe goes
+000000r 1               
+000000r 1               .org    $0200
+000200  1               
+000200  1                       ; 1. force Mikey to be in memory
+000200  1  9C F9 FF             stz MAPCTL      ; make sure Mikey access is enabled
+000203  1               
+000203  1                       ; 2. set IODIR the way Mikey ROM does
+000203  1  A9 03                lda #3          ; a = 00000011
+000205  1  8D 8A FD             sta IODIR       ; set up I/O dir register so we can set the page address bits
+000208  1               
+000208  1                       ; 3. set ComLynx to open collector
+000208  1  A9 04                lda #4          ; a = 00000100
+00020A  1  8D 8C FD             sta SERCTL      ; set the ComLynx to open collector
+00020D  1               
+00020D  1                       ; 4. make sure the ROM is powered on
+00020D  1  A9 08                lda #8          ; a = 00001000
+00020F  1  8D 8B FD             sta IODAT       ; set the ROM power to on
+000212  1               
+000212  1                       ; 5. read in 256 bytes from the cart and store it in $0300
+000212  1  A2 00                ldx #0          ; x = 0
+000214  1  AD B2 FC     rloop:  lda RCART_0     ; read a byte from the cart
+000217  1  9D 00 03             sta EXE,X       ; EXE[X] = a
+00021A  1  E8                   inx             ; x++
+00021B  1  D0 F7                bne rloop       ; loops until x wraps (i.e. 256 times)
+00021D  1               
+00021D  1                       ; 6. jump to the cart executable
+00021D  1  4C 00 03             jmp EXE         ; run the executable
+00021D  1               
