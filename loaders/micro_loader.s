@@ -18,8 +18,8 @@
         ; 1. force Mikey to be in memory
         stz MAPCTL      ; make sure Mikey access is enabled
 
-        ; 2. set IODIR the way Mikey ROM does
-        lda #3          ; a = 00000011
+        ; 2. set IODIR the way Mikey ROM does, also force AUDIN to output
+        lda #3          ; a = 00010011
         sta IODIR       ; set up I/O dir register
 
         ; 3. set ComLynx to open collector
